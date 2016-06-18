@@ -185,18 +185,87 @@ int resize_graphical_handler(Con *first, Con *second, orientation_t orientation,
     double new_percent, difference;
     double percent = first->percent;
     DLOG("percent = %f\n", percent);
-    int original = (orientation == HORIZ ? first->rect.width : first->rect.height);
+
+    int deco_height = (first->border_style == BS_NORMAL ? render_deco_height() : 0);
+    int original = (orientation == HORIZ ? first->rect.width : (first->rect.height + deco_height));
     DLOG("original = %d\n", original);
     new_percent = (original + pixels) * (percent / original);
     difference = percent - new_percent;
     DLOG("difference = %f\n", difference);
     DLOG("new percent = %f\n", new_percent);
-    first->percent = new_percent;
 
     // calculate the new percentage for the second container
     double s_percent = second->percent;
-    second->percent = s_percent + difference;
-    DLOG("second->percent = %f\n", second->percent);
+	s_percent += difference;
+
+	// if one of the cons falls below 0, steal space from other cons proportionally
+	if (new_percent <= 0.0 || s_percent <= 0.0) {
+		double minimum_size = 10.0/output->rect.width;
+
+		// set broken as the con (first or second) which would fall below 0%
+		Con *broken = first;
+		Con *nonbroken = second;
+		double *broken_percent = &new_percent;
+		if(s_percent <= 0.0) {
+			broken = second;
+			nonbroken = first;
+			broken_percent = &s_percent;
+		}
+
+		// get the direction to iterate through all the cons next to broken
+		direction_t search_direction;
+		if(new_percent <= 0.0) {
+			if (orientation == HORIZ) {
+				search_direction = D_LEFT;
+			} else {
+				search_direction = D_UP;
+			}
+		} else {
+			if (orientation == HORIZ) {
+				search_direction = D_RIGHT;
+			} else {
+				search_direction = D_DOWN;
+			}
+		}
+
+		// get the total size of space where all the cons have to fit in
+		Con *third = broken;
+		Con *fourth = NULL;
+		double total = broken->percent;
+		while(resize_find_tiling_participants(&third, &fourth, search_direction)) {
+			total += fourth->percent;
+			third = fourth;
+			fourth = NULL;
+		}
+		double shrink_prop = (total - broken->percent + *broken_percent) / total;
+
+		// if we fall below the minimum_size for a con, then push the nonbroken con back for the needed amount (shift_back)
+		double shift_back = 0.0;
+		DLOG("shrink_prop = %f\n", shrink_prop);
+		*broken_percent = broken->percent * shrink_prop;
+		if(*broken_percent < minimum_size) {
+			shift_back += minimum_size - *broken_percent;
+			*broken_percent = minimum_size;
+		}
+		// create space by resizing all the cons next to broken
+		third = broken;
+		while(resize_find_tiling_participants(&third, &fourth, search_direction)) {
+			fourth->percent *= shrink_prop;
+			if(fourth->percent < minimum_size) {
+				shift_back += minimum_size - fourth->percent;
+				fourth->percent = minimum_size;
+			}
+			third = fourth;
+			fourth = NULL;
+		}
+
+		first->percent = new_percent;
+		second->percent = s_percent;
+		nonbroken->percent -= shift_back;
+	} else {
+		first->percent = new_percent;
+		second->percent = s_percent;
+	}
 
     // now we must make sure that the sum of the percentages remain 1.0
     con_fix_percent(first->parent);
